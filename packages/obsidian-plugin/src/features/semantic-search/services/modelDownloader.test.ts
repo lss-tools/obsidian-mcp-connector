@@ -183,3 +183,42 @@ describe("model downloader — state machine (T13)", () => {
     expect(seen).toEqual([{ kind: "idle" }]);
   });
 });
+
+describe("model downloader — dtype forwarding", () => {
+  function makeRecordingFactory(): {
+    factory: PipelineFactoryWithProgress;
+    seen: Array<{ dtype?: string; webgpuDtype?: string } | undefined>;
+  } {
+    const seen: Array<{ dtype?: string; webgpuDtype?: string } | undefined> =
+      [];
+    const factory: PipelineFactoryWithProgress = async (_model, _cb, opts) => {
+      seen.push(opts);
+      return async () => ({ data: new Float32Array(4), dims: [1, 4] });
+    };
+    return { factory, seen };
+  }
+
+  test("no dtype configured → inner factory gets no opts", async () => {
+    const { factory, seen } = makeRecordingFactory();
+    await createModelDownloader({ innerFactory: factory }).factory("m");
+    expect(seen).toEqual([undefined]);
+  });
+
+  test("dtype alone → forwarded for the WASM path only", async () => {
+    const { factory, seen } = makeRecordingFactory();
+    await createModelDownloader({ innerFactory: factory, dtype: "q8" }).factory(
+      "m",
+    );
+    expect(seen).toEqual([{ dtype: "q8" }]);
+  });
+
+  test("webgpuDtype → forwarded alongside the WASM dtype", async () => {
+    const { factory, seen } = makeRecordingFactory();
+    await createModelDownloader({
+      innerFactory: factory,
+      dtype: "q4",
+      webgpuDtype: "q4f16",
+    }).factory("m");
+    expect(seen).toEqual([{ dtype: "q4", webgpuDtype: "q4f16" }]);
+  });
+});

@@ -2,6 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createTransformersProvider } from "./transformersProvider";
 import { createEmbeddingGemmaProvider } from "./embeddingGemmaProvider";
 import { createMultilingualE5Provider } from "./multilingualE5Provider";
+import {
+  createQwen3EmbeddingProvider,
+  QWEN3_DTYPE,
+} from "./qwen3EmbeddingProvider";
 import { createNativeEmbeddingProvider } from "./nativeEmbeddingProvider";
 import {
   __resetBackendForTesting,
@@ -331,6 +335,164 @@ describe("MultilingualE5Provider", () => {
     const { factory, calls } = makeMockFactory(768);
     await createMultilingualE5Provider(factory).embed(["my query"], "query");
     expect(calls[0]).toBe("query: my query");
+  });
+});
+
+describe("Qwen3EmbeddingProvider", () => {
+  test("providerKey, dimensions, sync maxInputTokens", () => {
+    const { factory } = makeMockFactory(1024);
+    const provider = createQwen3EmbeddingProvider(factory);
+    expect(provider.providerKey).toBe("qwen3-embedding-0.6b");
+    expect(provider.dimensions).toBe(1024);
+    expect(provider.maxInputTokens).toBe(512);
+  });
+
+  test("getMaxInputTokens returns 512 on both backends (chunk budget)", async () => {
+    const { factory } = makeMockFactory(1024);
+    const provider = createQwen3EmbeddingProvider(factory);
+    await resolveBackend({
+      gpu: { requestAdapter: async () => ({}) },
+    });
+    expect(await provider.getMaxInputTokens()).toBe(512);
+  });
+
+  test("getModelSizeBytes returns 1.2 GB", () => {
+    const { factory } = makeMockFactory(1024);
+    expect(createQwen3EmbeddingProvider(factory).getModelSizeBytes()).toBe(
+      1_200_000_000,
+    );
+  });
+
+  test("quantization is pinned on both backends", () => {
+    expect(QWEN3_DTYPE).toEqual({ wasm: "q4", webgpu: "fp16" });
+  });
+
+  test("document role → text embedded as-is", async () => {
+    const { factory, calls } = makeMockFactory(1024);
+    await createQwen3EmbeddingProvider(factory).embed(
+      ["my document"],
+      "document",
+    );
+    expect(calls[0]).toBe("my document");
+  });
+
+  test("query role → Instruct/Query prompt format", async () => {
+    const { factory, calls } = makeMockFactory(1024);
+    await createQwen3EmbeddingProvider(factory).embed(["my query"], "query");
+    expect(calls[0]).toBe(
+      "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:my query",
+    );
+  });
+
+  test("uses last-token pooling", async () => {
+    const { factory, optsLog } = makeMockFactoryWithOpts(1024);
+    await createQwen3EmbeddingProvider(factory).embed(["hello"], "document");
+    expect(optsLog[0]).toMatchObject({ pooling: "last_token" });
+  });
+
+  test("returns 1024d vectors", async () => {
+    const { factory } = makeMockFactory(1024);
+    const vectors = await createQwen3EmbeddingProvider(factory).embed(
+      ["text"],
+      "document",
+    );
+    expect(vectors[0]!.length).toBe(1024);
+  });
+});
+
+describe("TransformersProviderImpl — pooling and tokenizer bound", () => {
+  function makeFactoryWithTokenizer(dim: number) {
+    const tokenizerConfig: { model_max_length?: number } = {
+      model_max_length: 131072,
+    };
+    const optsLog: Array<object | undefined> = [];
+    const fetchLog: Array<string[] | undefined> = [];
+    const session = {
+      run: async (_feeds: unknown, fetches?: string[]) => {
+        fetchLog.push(fetches);
+        return {};
+      },
+    };
+    const factory = async (_model: string) => {
+      const pipe = async (input: string | string[], opts?: object) => {
+        optsLog.push(opts);
+        const n = Array.isArray(input) ? input.length : 1;
+        return { data: new Float32Array(dim * n), dims: [n, dim] };
+      };
+      return Object.assign(pipe, {
+        tokenizer: { _tokenizerConfig: tokenizerConfig },
+        model: { sessions: { model: session } },
+      });
+    };
+    return { factory, tokenizerConfig, optsLog, session, fetchLog };
+  }
+
+  test("session outputs untouched when fetchOutputs is not declared", async () => {
+    const { factory, session, fetchLog } = makeFactoryWithTokenizer(768);
+    const provider = createTransformersProvider({
+      modelId: "test-model",
+      providerKey: "test",
+      dimensions: 768,
+      maxInputTokensByBackend: { wasm: 512, webgpu: 512 },
+      modelSizeBytes: 1_000_000,
+      taskPrompt: (t) => t,
+      pipelineFactory: factory,
+    });
+    await provider.embed(["hello"], "document");
+    await session.run({});
+    expect(fetchLog).toEqual([undefined]);
+  });
+
+  test("Qwen3 session is restricted to last_hidden_state (no KV-cache readback)", async () => {
+    const { factory, session, fetchLog } = makeFactoryWithTokenizer(1024);
+    await createQwen3EmbeddingProvider(factory).embed(["hello"], "document");
+    await session.run({});
+    expect(fetchLog).toEqual([["last_hidden_state"]]);
+  });
+
+  test("pooling defaults to mean", async () => {
+    const { factory, optsLog } = makeMockFactoryWithOpts(768);
+    const provider = createTransformersProvider({
+      modelId: "test-model",
+      providerKey: "test",
+      dimensions: 768,
+      maxInputTokensByBackend: { wasm: 512, webgpu: 512 },
+      modelSizeBytes: 1_000_000,
+      taskPrompt: (t) => t,
+      pipelineFactory: factory,
+    });
+    await provider.embed(["hello"], "document");
+    expect(optsLog[0]).toMatchObject({ pooling: "mean" });
+  });
+
+  test("tokenizer model_max_length untouched when no bound is declared", async () => {
+    const { factory, tokenizerConfig } = makeFactoryWithTokenizer(768);
+    const provider = createTransformersProvider({
+      modelId: "test-model",
+      providerKey: "test",
+      dimensions: 768,
+      maxInputTokensByBackend: { wasm: 512, webgpu: 512 },
+      modelSizeBytes: 1_000_000,
+      taskPrompt: (t) => t,
+      pipelineFactory: factory,
+    });
+    await provider.embed(["hello"], "document");
+    expect(tokenizerConfig.model_max_length).toBe(131072);
+  });
+
+  test("tokenizer model_max_length clamped to the wasm bound", async () => {
+    const { factory, tokenizerConfig } = makeFactoryWithTokenizer(1024);
+    await createQwen3EmbeddingProvider(factory).embed(["hello"], "document");
+    expect(tokenizerConfig.model_max_length).toBe(1024);
+  });
+
+  test("tokenizer model_max_length clamped to the webgpu bound", async () => {
+    const { factory, tokenizerConfig } = makeFactoryWithTokenizer(1024);
+    await resolveBackend({
+      gpu: { requestAdapter: async () => ({}) },
+    });
+    await createQwen3EmbeddingProvider(factory).embed(["hello"], "document");
+    expect(tokenizerConfig.model_max_length).toBe(2048);
   });
 });
 

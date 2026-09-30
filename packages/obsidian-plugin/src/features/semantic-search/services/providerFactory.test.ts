@@ -105,6 +105,11 @@ const SETTINGS = {
     indexingMode: "live",
     unloadModelWhenIdle: true,
   } as SemanticSearchSettings,
+  qwen3: {
+    provider: "qwen3-embedding-0.6b",
+    indexingMode: "live",
+    unloadModelWhenIdle: true,
+  } as SemanticSearchSettings,
 };
 
 function fakeEmbeddingProvider(dim: number): EmbeddingProvider {
@@ -128,6 +133,8 @@ async function makeDepsWithRegistry(
   await gemmaStore.init();
   const e5Store = registry.storeFor("multilingual-e5-base", 768);
   await e5Store.init();
+  const qwen3Store = registry.storeFor("qwen3-embedding-0.6b", 1024);
+  await qwen3Store.init();
 
   return {
     plugin: pluginWithSmartSearch(scPresent),
@@ -137,6 +144,7 @@ async function makeDepsWithRegistry(
     embeddingProviders: {
       "embedding-gemma-300m": fakeEmbeddingProvider(768),
       "multilingual-e5-base": fakeEmbeddingProvider(768),
+      "qwen3-embedding-0.6b": fakeEmbeddingProvider(1024),
     },
   };
 }
@@ -237,6 +245,24 @@ describe("provider factory — chooser", () => {
     const deps = await makeDepsWithRegistry(false);
     const choose = createProviderFactory(deps);
     const provider = choose(SETTINGS.multilingualE5);
+    expect(provider.isReady()).toBe(true);
+    const out = await provider.search("anything", {});
+    expect(out).toEqual([]);
+  });
+
+  test("provider='qwen3-embedding-0.6b' returns a NativeProvider backed by qwen3 store", async () => {
+    const deps = await makeDepsWithRegistry(false);
+    const choose = createProviderFactory(deps);
+    const provider = choose(SETTINGS.qwen3);
+    expect(provider.isReady()).toBe(true);
+    const out = await provider.search("anything", {});
+    expect(out).toEqual([]);
+  });
+
+  test("qwen3-embedding-0.6b without registry falls back to native", async () => {
+    const deps = await makeDeps(false);
+    const choose = createProviderFactory(deps);
+    const provider = choose(SETTINGS.qwen3);
     expect(provider.isReady()).toBe(true);
     const out = await provider.search("anything", {});
     expect(out).toEqual([]);

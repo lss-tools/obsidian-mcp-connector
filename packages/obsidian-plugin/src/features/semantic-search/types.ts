@@ -48,6 +48,7 @@ export interface EmbeddingProvider {
  *   - "auto"                → Smart Connections if loaded and ready, else native
  *   - "embedding-gemma"     → EmbeddingGemma 300M (~190 MB, multilingual, 768d)
  *   - "multilingual-e5-base"→ Multilingual E5 base (~100 MB, multilingual, 768d)
+ *   - "qwen3-embedding-0.6b"→ Qwen3-Embedding 0.6B (multilingual, 1024d)
  *
  * `indexingMode`: live re-embedding on file change vs.
  * 5-minute batched scan. Only meaningful when the active provider
@@ -59,7 +60,7 @@ export interface EmbeddingProvider {
  */
 export const semanticSearchSettingsSchema = type({
   provider:
-    '"native"|"smart-connections"|"auto"|"embedding-gemma"|"multilingual-e5-base"',
+    '"native"|"smart-connections"|"auto"|"embedding-gemma"|"multilingual-e5-base"|"qwen3-embedding-0.6b"',
   indexingMode: '"live"|"low-power"',
   unloadModelWhenIdle: "boolean",
 });

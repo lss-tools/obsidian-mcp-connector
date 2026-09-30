@@ -293,6 +293,7 @@ export async function teardown(state: SemanticSearchState): Promise<void> {
 const DOWNLOADABLE_PROVIDER_KEYS: Partial<Record<string, string>> = {
   "embedding-gemma": "embedding-gemma-300m",
   "multilingual-e5-base": "multilingual-e5-base",
+  "qwen3-embedding-0.6b": "qwen3-embedding-0.6b",
 };
 
 /**

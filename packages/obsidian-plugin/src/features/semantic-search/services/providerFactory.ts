@@ -11,8 +11,10 @@
  *                                    EmbeddingGemma 300M store
  *   provider="multilingual-e5-base"→ NativeProvider backed by the
  *                                    multilingual-e5-base store
+ *   provider="qwen3-embedding-0.6b"→ NativeProvider backed by the
+ *                                    Qwen3-Embedding 0.6B store
  *
- * For "embedding-gemma" and "multilingual-e5-base", `deps.registry`
+ * For the three DLC providers above, `deps.registry`
  * and `deps.embeddingProviders` must be supplied; when absent the
  * factory falls back to the native provider (degraded but safe).
  */
@@ -36,6 +38,7 @@ export const ALL_PROVIDER_KEYS = [
   "native-minilm-l6-v2",
   "embedding-gemma-300m",
   "multilingual-e5-base",
+  "qwen3-embedding-0.6b",
 ] as const;
 
 export type ProviderKey = (typeof ALL_PROVIDER_KEYS)[number];
@@ -129,6 +132,14 @@ export function createProviderFactory(
         return buildNativeSearchProvider(
           ep,
           deps.registry.storeFor("multilingual-e5-base", 768),
+        );
+      }
+      case "qwen3-embedding-0.6b": {
+        const ep = deps.embeddingProviders?.["qwen3-embedding-0.6b"];
+        if (!ep || !deps.registry) return buildNative();
+        return buildNativeSearchProvider(
+          ep,
+          deps.registry.storeFor("qwen3-embedding-0.6b", 1024),
         );
       }
     }

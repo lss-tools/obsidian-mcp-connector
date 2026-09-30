@@ -49,6 +49,8 @@ export type ModelDownloaderOpts = {
   innerFactory: PipelineFactoryWithProgress;
   /** Passed to the WASM fallback path. Unused when WebGPU succeeds. */
   dtype?: string;
+  /** Passed to the WebGPU path. Omitted → Transformers.js device default. */
+  webgpuDtype?: string;
 };
 
 const IDLE: ModelState = { kind: "idle" };
@@ -89,9 +91,11 @@ class ModelDownloaderImpl implements ModelDownloader {
         const pipe = await this.opts.innerFactory(
           model,
           (info) => this.onProgress(info),
-          this.opts.dtype !== undefined
-            ? { dtype: this.opts.dtype }
-            : undefined,
+          this.opts.webgpuDtype !== undefined
+            ? { dtype: this.opts.dtype, webgpuDtype: this.opts.webgpuDtype }
+            : this.opts.dtype !== undefined
+              ? { dtype: this.opts.dtype }
+              : undefined,
         );
         this.setState({ kind: "ready" });
         return pipe;

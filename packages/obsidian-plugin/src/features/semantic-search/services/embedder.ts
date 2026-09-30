@@ -35,15 +35,31 @@ export type EmbedTensor = { data: Float32Array; dims?: number[] };
  * `await pipeline("feature-extraction", model)`. We type only the
  * call signature we use.
  */
-export type PipelineFn = (
+export type PipelineFn = ((
   input: string | string[],
   opts?: {
-    pooling?: "mean" | "cls" | "none";
+    pooling?: "mean" | "cls" | "none" | "last_token";
     normalize?: boolean;
     truncation?: boolean;
     max_length?: number;
   },
-) => Promise<EmbedTensor>;
+) => Promise<EmbedTensor>) & {
+  /**
+   * Transformers.js exposes the tokenizer on the pipeline. Its config's
+   * `model_max_length` is the only truncation bound the
+   * feature-extraction pipeline honours — the per-call `max_length`
+   * option above is ignored by @huggingface/transformers 4.2.0, and the
+   * public `model_max_length` accessor is getter-only.
+   */
+  tokenizer?: { _tokenizerConfig?: { model_max_length?: number } };
+  /** The loaded model's ONNX Runtime sessions, keyed by session name. */
+  model?: { sessions?: Record<string, OrtSessionLike | undefined> };
+};
+
+/** Minimal subset of onnxruntime's InferenceSession that we touch. */
+export type OrtSessionLike = {
+  run(feeds: unknown, fetches?: string[]): Promise<unknown>;
+};
 
 export type PipelineFactory = (model: string) => Promise<PipelineFn>;
 
@@ -69,7 +85,7 @@ export type ProgressCallback = (info: ProgressEvent) => void;
 export type PipelineFactoryWithProgress = (
   model: string,
   onProgress?: ProgressCallback,
-  opts?: { dtype?: string },
+  opts?: { dtype?: string; webgpuDtype?: string },
 ) => Promise<PipelineFn>;
 
 export interface Embedder {
@@ -384,7 +400,7 @@ export function __resetBackendForTesting(): void {
 export async function realPipelineFactory(
   model: string,
   onProgress?: ProgressCallback,
-  opts?: { dtype?: string },
+  opts?: { dtype?: string; webgpuDtype?: string },
 ): Promise<PipelineFn> {
   const backend = await resolveBackend();
 
@@ -395,6 +411,9 @@ export async function realPipelineFactory(
     const pipe = await _hfPipeline("feature-extraction", model, {
       device: "webgpu",
       progress_callback: onProgress,
+      // Opt-in: without it Transformers.js picks the device default
+      // (fp32), which for a 0.6B model is a 2 GB download.
+      ...(opts?.webgpuDtype !== undefined ? { dtype: opts.webgpuDtype } : {}),
     } as Parameters<typeof _hfPipeline>[2]);
     return pipe;
   }

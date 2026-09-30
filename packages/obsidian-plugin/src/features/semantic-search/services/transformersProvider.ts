@@ -43,6 +43,26 @@ export type TransformersProviderOpts = {
    * batch (EmbeddingGemma uses 4). Default 8.
    */
   batchSize?: number;
+  /**
+   * Pooling strategy. Encoder models use "mean" (default); decoder-based
+   * embedders (Qwen3-Embedding) take the last token's hidden state.
+   */
+  pooling?: "mean" | "last_token";
+  /**
+   * Hard truncation bound in real tokenizer tokens, applied to the
+   * pipeline's tokenizer once it loads. `maxInputTokensByBackend` only
+   * sizes chunks by a whitespace word count, so a model whose tokenizer
+   * declares a huge `model_max_length` needs this to keep one oversized
+   * chunk from blowing up attention memory. Omitted → tokenizer default.
+   */
+  tokenizerMaxLengthByBackend?: Record<BackendKind, number>;
+  /**
+   * Restrict the ONNX session to these outputs. Decoder exports also
+   * emit the KV cache (`present.*`, two tensors per layer); the
+   * feature-extraction pipeline never reads them, but unrequested they
+   * are still copied off the GPU on every call. Omitted → all outputs.
+   */
+  fetchOutputs?: string[];
 };
 
 const DEFAULT_BATCH_SIZE = 8;
@@ -102,7 +122,7 @@ class TransformersProviderImpl implements EmbeddingProvider {
         .slice(start, start + batchSize)
         .map((text) => this.opts.taskPrompt(text, role));
       const result = await pipe(batch, {
-        pooling: "mean",
+        pooling: this.opts.pooling ?? "mean",
         normalize: true,
         truncation: true,
         max_length: maxLen,
@@ -131,7 +151,18 @@ class TransformersProviderImpl implements EmbeddingProvider {
     if (!this.loadPromise) {
       this.loadPromise = this.opts
         .pipelineFactory(this.opts.modelId)
-        .then((p) => {
+        .then(async (p) => {
+          const caps = this.opts.tokenizerMaxLengthByBackend;
+          const tokenizerConfig = p.tokenizer?._tokenizerConfig;
+          if (caps && tokenizerConfig) {
+            tokenizerConfig.model_max_length = caps[await resolveBackend()];
+          }
+          const fetches = this.opts.fetchOutputs;
+          const session = p.model?.sessions?.model;
+          if (fetches && session) {
+            const run = session.run.bind(session);
+            session.run = (feeds) => run(feeds, fetches);
+          }
           this.pipeline = p;
           return p;
         })
