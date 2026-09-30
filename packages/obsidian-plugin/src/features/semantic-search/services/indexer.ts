@@ -187,9 +187,18 @@ class LiveIndexerImpl implements SemanticIndexer {
     }
     // See start(): guard against recordsFor() on an un-inited store.
     await this.opts.store.init();
-    const files = this.opts.vault
-      .getMarkdownFiles()
-      .filter((f) => !this.isExcluded(f.path));
+    const listed = this.opts.vault.getMarkdownFiles();
+    const files = listed.filter((f) => !this.isExcluded(f.path));
+    // Files deleted while no indexer was subscribed (Obsidian closed)
+    // never fire a `delete` event, so their records would outlive them.
+    // Judged against the full listing, not `files`: excluding an
+    // already-indexed path is the purge hook's decision, not this one's.
+    // An empty listing is a vault scan still in flight, never a vault
+    // that lost every note — skip rather than wipe the store.
+    if (listed.length > 0) {
+      const present = new Set(listed.map((f) => f.path));
+      await this.opts.store.purge((path) => !present.has(path));
+    }
     logger.info("live indexer: rebuildAll starting", {
       providerKey: this.opts.embedder.providerKey,
       fileCount: files.length,

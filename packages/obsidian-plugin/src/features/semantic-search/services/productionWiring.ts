@@ -395,9 +395,13 @@ export async function wireSemanticSearch(
     };
 
     // Auto-subscribe active DLC provider at plugin load when its
-    // store already has content. Skips the initial rebuild (existing
-    // store is current) and only wires up vault event subscriptions
-    // so future create/modify/delete events update the index live.
+    // store already has content. Wires up vault event subscriptions
+    // so future create/modify/delete events update the index live,
+    // and runs the session-start pass: files edited, added or removed
+    // while Obsidian was closed fired no event, so without it the
+    // store stays stale until a manual rebuild. Unchanged files
+    // (persisted mtime matches) are skipped without a read, and the
+    // model is not loaded unless some chunk actually changed.
     // Deferred to onLayoutReady to match the same vault-scan-ready
     // guarantee as the migration auto-trigger below.
     const _autoSubscribeDlc = (
@@ -408,7 +412,7 @@ export async function wireSemanticSearch(
       if (!dlcIndexer) return;
       state.dlcIndexers?.set(providerKey, dlcIndexer);
       plugin.app.workspace.onLayoutReady(() => {
-        dlcIndexer.start({ initialRebuild: false }).catch((err) => {
+        dlcIndexer.start().catch((err) => {
           logger.error("semantic-search: DLC auto-subscribe failed", {
             providerKey,
             error: err instanceof Error ? err.message : String(err),

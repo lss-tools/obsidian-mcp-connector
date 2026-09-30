@@ -1337,6 +1337,122 @@ describe("indexer — persisted mtime skip", () => {
     await idx2.stop();
   });
 
+  // One full session over `make()`'s shared adapter: build, then stop.
+  async function buildSession(
+    make: () => ReturnType<typeof createEmbeddingStore>,
+    vaultData: Record<string, { content: string; mtime: number }>,
+  ) {
+    const store = make();
+    await store.init();
+    const { embedder } = fakeEmbeddingProvider();
+    const idx = createLiveIndexer({
+      vault: makeMtimeVault(vaultData).vault,
+      chunker: fakeChunker,
+      embedder,
+      store,
+      debounceMs: 10,
+    });
+    await idx.start();
+    await idx.stop();
+  }
+
+  test("session start re-embeds only the file edited while closed", async () => {
+    const { make } = sharedStorePair();
+    await buildSession(make, {
+      "a.md": { content: "alpha", mtime: 100 },
+      "b.md": { content: "beta", mtime: 200 },
+    });
+
+    // Edited on disk between sessions: no vault event ever fired.
+    const store2 = make();
+    await store2.init();
+    const v2 = mtimeVaultWithReadSpy({
+      "a.md": { content: "alpha", mtime: 100 },
+      "b.md": { content: "beta edited", mtime: 300 },
+    });
+    const { embedder: e2, embeds } = fakeEmbeddingProvider();
+    const idx2 = createLiveIndexer({
+      vault: v2.vault,
+      chunker: fakeChunker,
+      embedder: e2,
+      store: store2,
+      debounceMs: 10,
+    });
+    await idx2.start();
+    expect(v2.reads()).toBe(1);
+    expect(embeds()).toEqual(["beta edited"]);
+    expect(store2.mtimeFor("b.md")).toBe(300);
+    await idx2.stop();
+  });
+
+  test("session start drops records of a file deleted while closed", async () => {
+    const { make } = sharedStorePair();
+    await buildSession(make, {
+      "a.md": { content: "alpha", mtime: 100 },
+      "gone.md": { content: "ghost", mtime: 200 },
+    });
+
+    const store2 = make();
+    await store2.init();
+    const { embedder: e2, embeds } = fakeEmbeddingProvider();
+    const idx2 = createLiveIndexer({
+      vault: makeMtimeVault({ "a.md": { content: "alpha", mtime: 100 } }).vault,
+      chunker: fakeChunker,
+      embedder: e2,
+      store: store2,
+      debounceMs: 10,
+    });
+    await idx2.start();
+    expect(store2.hasRecords("gone.md")).toBe(false);
+    expect(store2.hasRecords("a.md")).toBe(true);
+    expect(embeds()).toEqual([]);
+    await idx2.stop();
+  });
+
+  test("an empty vault listing does not wipe the store", async () => {
+    const { make } = sharedStorePair();
+    await buildSession(make, { "a.md": { content: "alpha", mtime: 100 } });
+
+    // Vault scan still in flight: getMarkdownFiles() returns nothing.
+    const store2 = make();
+    await store2.init();
+    const { embedder: e2 } = fakeEmbeddingProvider();
+    const idx2 = createLiveIndexer({
+      vault: makeMtimeVault({}).vault,
+      chunker: fakeChunker,
+      embedder: e2,
+      store: store2,
+      debounceMs: 10,
+    });
+    await idx2.start();
+    expect(store2.hasRecords("a.md")).toBe(true);
+    await idx2.stop();
+  });
+
+  test("a newly excluded but still present file is not dropped by the session-start pass", async () => {
+    const { make } = sharedStorePair();
+    const vaultData = {
+      "a.md": { content: "alpha", mtime: 100 },
+      "secret.md": { content: "hidden", mtime: 200 },
+    };
+    await buildSession(make, vaultData);
+
+    const store2 = make();
+    await store2.init();
+    const { embedder: e2 } = fakeEmbeddingProvider();
+    const idx2 = createLiveIndexer({
+      vault: makeMtimeVault(vaultData).vault,
+      chunker: fakeChunker,
+      embedder: e2,
+      store: store2,
+      debounceMs: 10,
+      isExcluded: (path) => path === "secret.md",
+    });
+    await idx2.start();
+    expect(store2.hasRecords("secret.md")).toBe(true);
+    await idx2.stop();
+  });
+
   test("explicit rebuildAll() re-processes despite matching mtimes", async () => {
     const { make } = sharedStorePair();
     const vaultData = { "a.md": { content: "alpha", mtime: 100 } };
